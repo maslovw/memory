@@ -25,7 +25,7 @@ limitations under the License.
 </style>
 <body>
 <p>
-	Select an ld *.map file: <input id="file" type="file"/>
+	Select an ld *.json file: <input id="file" type="file"/>
 </p>
 <p id="error">&nbsp;</p>
 </body>
@@ -89,429 +89,21 @@ reader.onload = function(e) {
 	// Windows:							CRLF    \r\n
 	// Unix, inc. Mac OS:				LF      \n
 	// Excel for Mac "Save As CSV":		CR		\r
-	var lines = inputFile.split(/\r\n?|\n/); // Any of the above
-	
-	var root = {"name": "Memory", "children": []};
-	var memoryTop = 0;
-	
-	var regionsLines = getRegionsLines(lines);
-	// console.log("regions lines from *.Map file:");
-	// console.log(regionsLines);
-	parseMemoryConfig(regionsLines, root);
-	
-	// Regions are not necessarily in order. Sort them by origin.
+	//var lines = inputFile.split(/\r\n?|\n/); // Any of the above
+	//////
+	var root = JSON.parse(inputFile);
+	console.log(root); 	
+
 	root.children.sort(sortByOrigin);
-	
-	// On the Nordic, space within flash would be nice to see, and within RAM, but not between the
-	// end of flash and the start of RAM. That's all too messy and Nordic-specific to do, so just
-	// switch this on and off as you see fit.
-	if (FILL_IN_BLANK_SPACE_BETWEEN_REGIONS) {
-		fillInBlankSpaceBetweenRegions(root);
-	}
-		
-	// console.log("Memory regions:");
-	// console.log(root.children);
-	
-	var memoryMapLines = getMemoryMapLines(lines);
-	// console.log("sections lines from *.Map file:");
-	// console.log(sectionsLines);
-	parseMemory(memoryMapLines, root);
-	
-	fillInBlankSpaceWithinRegions(root);
-	
-	// The root node needs an origin and an end as well
-	root.origin = root.children[0].origin;
-	root.end = root.children[root.children.length - 1].end;
-	
-	// Reverse the order of regions so that we're drawing 0x0 at the bottom of the screen. Within
-	// regions though, sections fill up from bottom to top.
-	root.children.reverse();
-	
-	console.log("root:");
-	console.log(root);
-	
-	// Don't let any node at the region level get smaller than what we can click on.
-	// Probably not a good idea.
-	// enlargeTinyRegions(root);
-	
 	display(root);
     
     // Blank out the file chooser field. If we don't do this, choosing the same file again
     // after editing doesn't change the value and the change() handler is never called.
     $("#file").val("");
+	return;
 };
 
-// Pull out just the interesting lines from the "Memory Configuration" part of the *.Map file,
-// which looks like this:
-//
-// Name             Origin             Length             Attributes
-// FLASH            0x0000000000016000 0x000000000002a000 xr
-// RAM              0x0000000020002000 0x0000000000002000 xrw
-// *default*        0x0000000000000000 0xffffffffffffffff	
-var getRegionsLines = function(lines) {
-	var inMemoryConfig = false;
-	var relevantLines = [];
-	
-	for (var l = 0; l < lines.length; l++) {
-		var line = lines[l];
-		
-		if (line.indexOf("Name") != -1
-				&& line.indexOf("Origin") != -1
-				&& line.indexOf("Length") != -1) {
-			// We're interested in the next line onwards.
-			inMemoryConfig = true;
-			continue;
-		}
-		
-		if (inMemoryConfig) {
-			var words = line.trim().split(/\s+/);
-			
-			// We know we're done with the memory configuration section when we see a blank line.
-			if (words.length == 1 && words[0] == "") {
-				break;
-			}
-			
-			relevantLines.push(line);
-		}
-	}
-	
-	return relevantLines;
-}
 
-var getMemoryMapLines = function(lines) {
-	var inMemoryMap = false;
-	var seenLinkerScriptHeading = false;
-	var blankLinesSinceLinkerScriptHeading = 0;
-	var relevantLines = [];
-	
-	for (var l = 0; l < lines.length; l++) {
-		var line = lines[l];
-		
-		if (line == "Linker script and memory map") {
-			seenLinkerScriptHeading = true;
-			continue;
-		}
-		
-		if (seenLinkerScriptHeading) {
-			if (line == "") {
-				blankLinesSinceLinkerScriptHeading++;
-			}
-		}
-		
-		if (blankLinesSinceLinkerScriptHeading == 2) {
-			inMemoryMap = true;
-		}
-		
-		if (inMemoryMap) {
-			// We're done once we reach the end of the stack. Ignore debug symbols and so on.
-			if (line.indexOf("OUTPUT") == 0) {
-				break;
-			}
-			
-			relevantLines.push(line);
-		}
-	}
-	
-	// Long section names will force the linker to break the line into two. Unbreak these so
-	// they're easier to handle below. Any single word lines followed by a line with two or more
-	// words should be joined up.
-	var unbrokenLines = [];
-	var singleWordLine = null;
-	
-	for (var l = 0; l < relevantLines.length; l++) {
-		var line = relevantLines[l];
-		
-		if (line == "") continue;
-		
-		var words = line.trim().split(/\s+/);
-		
-		if (words.length == 1) {
-			// Remember this word and read the next line.
-			singleWordLine = words[0];
-			continue;
-		}
-		
-		if (singleWordLine != null && words.length >= 2) {
-			// Last line was a single word and this line has two or more. Join them.
-			var unbrokenLine = singleWordLine + line;
-			unbrokenLines.push(unbrokenLine);
-			singleWordLine = null;
-			continue;
-		}
-		
-		unbrokenLines.push(line);
-	}
-	
-	return unbrokenLines;
-}
-
-var parseMemoryConfig = function(lines, root) {
-	for (var l = 0; l < lines.length; l++) {
-		var line = lines[l];
-		
-		// Split line into cells based on any whitespace.
-		var cells = line.trim().split(/\s+/);
-		
-		var name = cells[0];
-		var origin = parseInt(removeLeading0x(cells[1]), 16);
-		var declaredSize = parseInt(removeLeading0x(cells[2]), 16);
-		var end = origin + declaredSize;
-		
-		// Ignore a line like:
-		// *default*        0x0000000000000000 0xffffffffffffffff
-		if (name == "*default*") {
-			continue;
-		}
-		
-		var region = {"name": name,
-				"declaredSize": declaredSize,
-				"origin": origin,
-				"end": end,
-				"children": []};
-		root.children.push(region);
-	}	
-};
-
-var fillInBlankSpaceBetweenRegions = function(root) {
-	// Let d3 calculate the size of each node based on the sum of its children.
-	var nodes = partition.nodes(root);
-	
-	// Figure out where the top of our memory is.
-	memoryTop = 0;
-	
-	for (var i = 0; i < root.children.length; i++) {
-		var region = root.children[i];
-		
-		if (region.end > memoryTop) {
-			memoryTop = region.end;
-		}
-	}
-	
-	console.log("Top of memory: " + toHex(memoryTop));
-	
-	// Figure out the average size of a declared memory region.
-	var averageRegionSize = 0;
-	var totalRegionMemory = 0;
-	
-	for (var i = 0; i < root.children.length; i++) {
-		var region = root.children[i];
-		
-		if (typeof(region.declaredSize) == "undefined") {
-			continue;
-		}
-		
-		totalRegionMemory += region.declaredSize;
-	}
-	
-	averageRegionSize = totalRegionMemory / root.children.length;
-	
-	console.log("Average declared region size: " + toHex(averageRegionSize));
-	
-	// If the first region doesn't start at zero, put some free space in before it. Because free
-	// space can be thousands of times larger than the regions it surrounds, don't draw this to
-	// scale. Just make it about the same size as everything else.
-	if (typeof root.children !== 'undefined' && root.children.length > 0) {
-		var firstRegion = root.children[0];
-		
-		if (firstRegion.origin != 0) {
-			var initialFreeSpace = {"name": "FREE",
-					"children": [],
-					"origin": 0,
-					"size": averageRegionSize,
-					"sizeForLabel": firstRegion.origin,
-					"end": firstRegion.origin - 1};
-			
-			console.log("Adding free space before first declared region: " + toHex(firstRegion.origin));
-			// console.log(initialFreeSpace);
-			
-			root.children.push(initialFreeSpace);
-			root.children.sort(sortByOrigin);
-			nodes = partition.nodes(root);
-		}
-	}
-	
-	// Fill in the blank space between regions. Because free space can be thousands of times larger
-	// than the regions it surrounds, don't draw this to scale. Just make it about the same size as
-	// everything else.
-	for (var i = 0; i < root.children.length; i++) {
-		var thisRegion = root.children[i];
-		var nextRegion = root.children[i + 1];
-		
-		if (typeof nextRegion == "undefined") {
-			// End of regions. Done.
-			break;
-		}
-		
-		var spaceBetween = nextRegion.origin - thisRegion.end;
-		
-		if (spaceBetween > 1) {
-			var freeSpace = {"name": "FREE",
-					"children": [],
-					"origin": thisRegion.end,
-					"size": averageRegionSize,
-					"sizeForLabel": spaceBetween,
-					"end": thisRegion.end + spaceBetween};
-			
-			console.log("Region " + thisRegion.name + " ends at " + toHex(thisRegion.end)
-					+ " and the next one, " + nextRegion.name + ", starts at "
-					+ toHex(nextRegion.origin) + ". Adding free space between regions: "
-					+ toHex(spaceBetween));
-			// console.log(freeSpace);
-			
-			root.children.push(freeSpace);
-			root.children.sort(sortByOrigin);
-			nodes = partition.nodes(root);
-		}		
-	}
-	
-	// Let d3 process the nodes again now that the free space is there.
-	nodes = partition.nodes(root);
-};
-
-var fillInBlankSpaceWithinRegions = function(root) {
-	// Let d3 calculate the size of each node based on the sum of its children.
-	var nodes = partition.nodes(root);
-	
-	// Create nodes for left over free space inside each region. This is to scale.
-	for (var i = 0; i < root.children.length; i++) {
-		var region = root.children[i];
-		
-		if (region.value < region.declaredSize) {
-			var freeSpace = {"name": "FREE",
-					"children": [],
-					"size": (region.declaredSize - region.value)};
-			
-			if (typeof region.children == "undefined") {
-				region.children = [];
-			}
-			
-			region.children.push(freeSpace);
-		}
-	}
-	
-	// Let d3 process the nodes again now that the free space is there.
-	nodes = partition.nodes(root);
-};
-
-var parseMemory = function(lines, root) {
-	var sectionCount = 0;
-	var chunkCount = 0;
-	var section = null;
-	
-	for (var l = 0; l < lines.length; l++) {
-		var line = lines[l];
-		
-		// Split line into words based on any whitespace.
-		var cells = line.trim().split(/\s+/);
-		
-		if (!isSectionLine(cells) && !isSourceLine(cells)) {
-			continue;
-		}
-		
-		// Memory section, eg. .text, .data., .bss.
-		// This is also often something like ".text._scanf_float", which should be treated as
-		// section ".text", and NOT ".text._scanf_float".
-		var sectionName = cells[0];
-		
-		if (sectionName == "*fill*") {
-			// eg. " *fill*         0x0000000000041d3c        0x4 "
-			// Ignore these. They look like sections but are reallt symbol-level stuff.
-			continue;
-		}
-		
-		// Start address in memory, eg. 0x000000002000210c, as integer.
-		var startAddress = parseInt(removeLeading0x(cells[1]), 16);
-		
-		// Size of this section or chunk of memory, eg. 0x1f4, as integer.
-		var size = parseInt(removeLeading0x(cells[2]), 16);
-		
-		// Ignore anything with size zero.
-		if (size == 0) {
-			continue;
-		}
-		
-		// Section lines are not indented and have three words.
-		//   eg. ".text           0x0000000000038000    0x102ec"
-		if (isSectionLine(cells)) {
-			section = addSection(root, sectionName, startAddress, size);
-			sectionCount++;
-		}
-		
-		// Source lines are indented one space and have four words.
-		//   eg. " .Vectors       0x0000000000038000       0xc0 _build/gcc_startup_nrf51.os"
-		// The section this chunk goes into depends on it's start address and NOT on the section
-		// name on this line, since that's often something like ".text._scanf_float".
-		if (isSourceLine(cells)) {
-			// C or assembler source file for this chunk of memory.
-			var sourceFile = filenameFromPath(cells[3]);
-			
-			if (section == null) {
-				console.log("Source file " + sourceFile + " has no enclosing section. Skipping.");
-				continue;
-			}
-			
-			// Don't bother with an "end" field on chunks.
-			var chunk = {"name": sourceFile,
-					"origin": startAddress,
-					"size": size};
-			section.children.push(chunk);
-			
-			// If we don't sort by size, the chunks stay in the order they appear in the map file.
-			if (SORT_CHUNKS_BY_SIZE) {
-				section.children.sort(sortBySize);			
-			}
-			
-			chunkCount++;
-		}
-	}
-	
-	console.log("Found " + chunkCount + " chunks of memory across " + sectionCount + " sections.");
-};
-
-var addSection = function(root, sectionName, startAddress, size) {
-	// Find the first region of memory that this start address falls within.
-	var region = null;
-	
-	for (var i = 0; i < root.children.length; i++) {
-		var b = root.children[i];
-		
-		if (startAddress >= b.origin && startAddress < b.end) {
-			region = b;
-			break;
-		}
-	}
-	
-	if (region == null) {
-		console.log("Can't find which region of memory" + startAddress + " is in. Ignoring section "
-				+ sectionName);
-		return;
-	}
-	
-	// Seems that d3 removes the children array when it's empty.
-	if (typeof(region.children) == "undefined") {
-		region.children = [];
-	}
-	
-	// There shouldn't already be a section by this name in this region. Warn if so.
-	var section = region.children.filter(function(child) {
-		return child.name == sectionName;
-	})[0];
-	
-	if (section != null) {
-		console.log("Replacing existing section " + sectionName + " in region " + region.name);
-		var index = region.children.indexOf(section);
-		region.children.splice(index, 1);
-	}
-	
-	section = {"name": sectionName,
-			"children": [],
-			"origin": startAddress,
-			"size": size,
-			"end": (startAddress + size)};
-	region.children.push(section);
-	
-	return section;
-};
 
 var reverseChildren = function(node) {
 	if (!node || !node.children || node.children.length <= 1) return;
@@ -659,41 +251,6 @@ var display = function(root) {
 	}
 };
 
-// Section lines have three words. They're also NOT indented, but we don't check for that.
-//   eg. ".text           0x0000000000038000    0x102ec"
-var isSectionLine = function(words) {
-	if (words == null) return false;
-	
-	if (words.length === undefined) return false;
-	
-	if (words.length != 3) return false;
-	
-	// Second word must start with 0x
-	if (words[1].indexOf("0x") != 0) return false;
-	
-	// Third word must also start with 0x
-	if (words[2].indexOf("0x") != 0) return false;
-	
-	return true;
-}
-
-// Source lines have four words. They're also indented one space, but we don't check for that.
-//   eg. " .Vectors       0x0000000000038000       0xc0 _build/gcc_startup_nrf51.os"
-var isSourceLine = function(words) {
-	if (words == null) return false;
-	
-	if (words.length === undefined) return false;
-	
-	if (words.length != 4) return false;
-	
-	// Second word must start with 0x
-	if (words[1].indexOf("0x") != 0) return false;
-	
-	// Third word must also start with 0x
-	if (words[2].indexOf("0x") != 0) return false;
-	
-	return true;
-};
 
 var removeLeading0x = function(value) {
 	if (!value) return value;
@@ -744,17 +301,17 @@ var toReadbleBytes = function(value) {
 
 var sortByOrigin = function(a, b) {
 	if (!a || !b) return 0;
-	
+
 	if (typeof a.origin == "undefined" || typeof b.origin == "undefined") return 0;
 	
 	if (a.origin == b.origin) {
 		return 0;
 	}
 	else if (a.origin > b.origin) {
-		return 1;
+		return -1;
 	}
 	else {
-		return -1;
+		return 1;
 	}
 };
 

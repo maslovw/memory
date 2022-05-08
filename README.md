@@ -1,14 +1,7 @@
 memory
 ======
 
-Visualise your linker memory map file using D3.js. Try it out here:
+Visualise your linker memory json file using D3.js.
 
-http://htmlpreview.github.com/?https://github.com/eliotstock/memory/blob/master/index.html
+https://htmlpreview.github.io/?https://raw.githubusercontent.com/maslovw/memory/master/index.htmlk
 
-This has only been tested on a project for the Nordic nRF51822, but should work with any *.Map file produced by the GNU linker, ld.
-
-Pull requests welcome.
-
-Cheers,
-
-Eliot.
